@@ -5,8 +5,6 @@ from lumibot.traders import trader
 from datetime import datetime, timedelta
 from alpaca_trade_api import REST
 from finbert_utils import estimate_sentiment
-import requests.exceptions
-
 
 API_KEY = "PKILKN4725A3FIFKW35Q"
 API_SECRET = "ED176BkcDdnGOgSqauYEC3DKuJ7EcyqVV0ES0GYF"
@@ -17,7 +15,6 @@ ALPACA_CREDS = {
     "API_SECRET": API_SECRET,
     "PAPER": True
 }
-
 
 class MLTrader(Strategy):
     def initialize(self, symbol: str = "SPY", cash_at_risk: float = 0.5):
@@ -30,16 +27,18 @@ class MLTrader(Strategy):
         except Exception as e:
             print(f"Error initializing Alpaca API: {e}")
             self.api = None
+        self.news_cache = {}  # Caché para almacenar las noticias
 
-    def position_sizing(self):
-        try:
-            cash = self.get_cash()
-            last_price = self.get_last_price(self.symbol)
-            quantity = round(cash * self.cash_at_risk / last_price, 0)
-            return cash, last_price, quantity
-        except Exception as e:
-            print(f"Error calculating position size: {e}")
-            return None, None, None
+    def get_news_cached(self, symbol, start_date, end_date):
+        # Verificar si las noticias ya están en caché y si no, recuperarlas de la API
+        key = (symbol, start_date, end_date)
+        if key in self.news_cache:
+            return self.news_cache[key]
+        else:
+            news = self.api.get_news(symbol=symbol, start=start_date, end=end_date)
+            news_headlines = [ev.__dict__["_raw"]["headline"] for ev in news]
+            self.news_cache[key] = news_headlines  # Almacenar en caché las noticias
+            return news_headlines
 
     def get_dates(self):
         try:
@@ -51,17 +50,22 @@ class MLTrader(Strategy):
             return None, None
 
     def get_sentiment(self):
-        try:
-            today, three_days_prior = self.get_dates()
-            if today is None or three_days_prior is None:
-                return None, None
-            news = self.api.get_news(symbol=self.symbol, start=three_days_prior, end=today)
-            news = [ev.__dict__["_raw"]["headline"] for ev in news]
-            probability, sentiment = estimate_sentiment(news)
-            return probability, sentiment
-        except Exception as e:
-            print(f"Error getting sentiment: {e}")
+        today, three_days_prior = self.get_dates()
+        if today is None or three_days_prior is None:
             return None, None
+        news = self.get_news_cached(self.symbol, three_days_prior, today)  # Obtener noticias de la caché
+        probability, sentiment = estimate_sentiment(news)
+        return probability, sentiment
+
+    def position_sizing(self):
+        try:
+            cash = self.get_cash()
+            last_price = self.get_last_price(self.symbol)
+            quantity = round(cash * self.cash_at_risk / last_price, 0)
+            return cash, last_price, quantity
+        except Exception as e:
+            print(f"Error calculating position size: {e}")
+            return None, None, None
 
     def on_trading_iteration(self):
         cash, last_price, quantity = self.position_sizing()
@@ -104,7 +108,6 @@ class MLTrader(Strategy):
         except Exception as e:
             print(f"Error executing trading strategy: {e}")
 
-
 start_date = datetime(2020, 1, 1)
 end_date = datetime(2023, 12, 31)
 broker = Alpaca(ALPACA_CREDS)
@@ -116,3 +119,4 @@ strategy.backtest(
     end_date,
     parameters={"symbol": "SPY", "cash_at_risk": .5}
 )
+
